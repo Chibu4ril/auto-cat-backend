@@ -4,14 +4,9 @@ supabase
 python-dotenv
 requests
 pandas
-xgboost
-scikit-learn
-matplotlib
-seaborn
 python-multipart
 numpy
-scipy
-
+openpyxl
 # pip install  -r requirements.txt
 # source venv/bin/activate
 # uvicorn main:app --reload

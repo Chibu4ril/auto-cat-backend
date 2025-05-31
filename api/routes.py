@@ -8,8 +8,10 @@ from services.file_services import delete_uploaded_files
 import json
 import sys
 import os
-
-
+from core.config import supabase
+import pandas as pd
+import io
+import requests
 from fastapi.responses import JSONResponse
 
 
@@ -23,14 +25,10 @@ class FileDeleteRequest(BaseModel):
 async def get_uploaded_files():
     try:
         upload_files = await fetch_uploaded_files()
-        training_set_files = await fetch_training_sets()
-
-        # print(upload_files)
-
-        all_files = upload_files + training_set_files
-        return {"files": all_files}
+        return {"files": upload_files}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.delete("/delete")
 async def match_the_file(request: FileDeleteRequest):
@@ -44,48 +42,52 @@ async def match_the_file(request: FileDeleteRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class FileRequest(BaseModel):
+    file_path: str
 
-class PredictionRequest(BaseModel):
-    selectedFileUrl: str
-    
 
-@router.post("/runPrediction")
-async def run_prediction(request: PredictionRequest):
+@router.post("/parse-csv-from-supabase")
+async def parse_csv_from_supabase(req: FileRequest):
     try:
-        selected_file = request.selectedFileUrl
+        # Build the public URL
+        public_url = supabase.storage.from_("newfiles").get_public_url(req.file_path)
+        if not public_url:
+            return {"error": "Could not generate public URL for the file."}
+        
+        print(f"Fetching file from: {public_url}")
 
-        script_path = os.path.abspath("services/lgrModel.py")
-     
-        process = subprocess.run(
-            [sys.executable, script_path, selected_file],
-            capture_output=True,
-            text=True
-        )
+        
 
+        # Download the file using requests
+        response = requests.get(public_url)
+        if response.status_code != 200:
+            return {"error": "Failed to fetch file from Supabase storage."}
+        
+        file_bytes = response.content
+
+
+        file_name = req.file_path.lower()
+
+        # Parse file based on extension
+        if file_name.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(file_bytes), encoding="utf-8")
+        elif file_name.endswith(".tsv"):
+            df = pd.read_csv(io.BytesIO(file_bytes), sep="\t", encoding="utf-8")
+        elif file_name.endswith(".xlsx"):
+            df = pd.read_excel(io.BytesIO(file_bytes))
+        else:
+            return {"error": "Unsupported file type"}
+
+        df = df.fillna(None)
+        records = df.to_dict(orient="records")
+
+        print(json.dumps(records[:3], indent=2, ensure_ascii=False), flush=True)
+
+        return {"data": records}
     
-        log_file = "/tmp/script_output.log"
-        if os.path.exists(log_file):
-            with open(log_file, "r") as f:
-                log_contents = f.read()
-            logging.info(f"Script Log: \n{log_contents}")  # Print to Render logs
-
-
-        # If the script runs successfully
-        if process.returncode == 0:
-            try:
-                output_json = json.loads(process.stdout.strip())  # Parse JSON safely
-                return JSONResponse(content=output_json)  # Return JSON response
-            except json.JSONDecodeError:
-                raise HTTPException(status_code=500, detail="Invalid JSON output from script")
-
-        # If the script fails, return an error response
-        raise HTTPException(status_code=500, detail=f"Script execution failed: {process.stderr.strip()}")
-
     except Exception as e:
-        logging.error("Exception in runPrediction:", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error running prediction: {str(e)}")
+        return {"error": str(e)}
     
-
 
 @router.get("/health")
 def health_check():
