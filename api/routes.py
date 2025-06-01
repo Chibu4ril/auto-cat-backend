@@ -13,6 +13,8 @@ import pandas as pd
 import io
 import requests
 from fastapi.responses import JSONResponse
+import numpy as np
+import orjson
 
 
 
@@ -77,17 +79,31 @@ async def parse_csv_from_supabase(req: FileRequest):
             df = pd.read_excel(io.BytesIO(file_bytes))
         else:
             return {"error": "Unsupported file type"}
+        
+        df.columns = (
+        df.columns.str.strip()
+        .str.lower()
+        .str.replace(" ", "_")
+        .str.replace("-", "_")
+        )
+        REQUIRED_COLUMNS = {
+            "sku": "prodNo",
+            "name": "manufName",  # use as a fallback
+            "description": "prodDesc",
+            "trade_price": "tradePrice",
+            "rrp": "rrp",
+            "stock": "stock",
+            "ean": "EAN"
+            }
 
-        df = df.fillna(None)
         records = df.to_dict(orient="records")
-
-        print(json.dumps(records[:3], indent=2, ensure_ascii=False), flush=True)
+        print(orjson.dumps(records[:3], option=orjson.OPT_INDENT_2).decode())
 
         return {"data": records}
     
     except Exception as e:
         return {"error": str(e)}
-    
+     
 
 @router.get("/health")
 def health_check():
