@@ -47,6 +47,119 @@ async def match_the_file(request: FileDeleteRequest):
 class FileRequest(BaseModel):
     file_path: str
 
+def analyze_catalog_dataframe(df: pd.DataFrame) -> dict:
+    # 1. Count of duplicate rows
+    duplicate_rows = df.duplicated().sum()
+
+    # 2. Total missing (NaN) cells
+    total_missing_cells = df.isna().sum().sum()
+
+    # 3. Empty strings or NaNs in RRP
+    rrp_missing = df["RRP"].isna().sum()
+    if df["RRP"].dtype == object:
+        rrp_missing += (df["RRP"].astype(str).str.strip() == "").sum()
+
+    # 4. RRP = 0
+    rrp_zero = 0
+    try:
+        rrp_zero = (pd.to_numeric(df["RRP"], errors="coerce") == 0).sum()
+    except Exception:
+        pass
+
+    # 5. NaN count per column
+    nan_per_column = df.isna().sum().to_dict()
+
+    return {
+        "duplicate_rows": duplicate_rows,
+        "total_missing_cells": total_missing_cells,
+        "rrp_empty_or_missing": rrp_missing,
+        "rrp_zero": rrp_zero,
+        "nan_per_column": nan_per_column,
+        "total_rows": len(df),
+        "total_columns": len(df.columns)
+    }
+
+
+    
+def generate_fake_ean(prod_no: str, rrp: float) -> str:
+    """Simulate EAN using hash of SKU and RRP"""
+    base = f"{prod_no}{rrp}"
+    return str(abs(hash(base)))[:13] 
+
+def clean_catalog_dataframe(df):
+    try:
+        # Step 1: Rename columns to normalized names
+        column_mapping = {
+            "ProdNr": "prodNo",
+            "ManProdNr": "manufProdNo",
+            "Manuf_Name": "manufName",
+            "Product_Desc": "prodDesc",
+            "TradePrice": "tradePrice",
+            "RRP": "rrp",
+            "currency_code": "currencyCode",
+            "file_creation": "filecreation",
+            "Stock": "stock",
+            "Stock_Delivery_Date": "stockdelvdate",
+            "Classification": "classification",
+            "E_Orderable": "eorderable",
+            "ManufProdURL": "manufProdUrl",
+            "ProductFamilies": "prodfamilies",
+            "AdvancedClassification": "advClassification",
+            "FutExp_1": "futexp1",
+            "FutExp_2": "futexp2",
+            "FutExp_3": "futexp3",
+            "FutExp_4": "futexp4",
+            "FutExp_5": "futexp5",
+            "Weight": "weight",
+        }
+        df = df.rename(columns=column_mapping)
+
+        # Step 2: Remove duplicates
+        df = df.drop_duplicates()
+        
+        # Step 3: Trim whitespace from all string columns
+        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+
+         # Step 5: Ensure correct data types
+        string_cols = [ "prodNo", "manufProdNo", "manufName", "prodDesc", "currencyCode", "filecreation", "stockdelvdate", "classification", "eorderable", "manufProdUrl", "prodfamilies", "advClassification", "futexp1", "futexp2",
+                       "futexp3", "futexp4", "futexp5"]
+        
+        numeric_cols = [ "tradePrice", "rrp", "stock", "weight"]
+        
+        for col in string_cols:
+            if col in df.columns:
+                df[col] = df[col].astype(str)
+                
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # Step 6: Fill NaN values
+        df[string_cols] = df[string_cols].fillna("N/A")
+        df[numeric_cols] = df[numeric_cols].fillna(0)
+
+        # Step 7: Set selling price
+        if "rrp" in df.columns and "tradePrice" in df.columns:
+            df["price"] = df["rrp"]
+            df.loc[df["rrp"] == 0, "price"] = df["tradePrice"] * 1.20
+
+        # Step 8: Generate unique `id`
+        df["id"] = pd.util.hash_pandas_object(df).astype(str)
+
+        # Step 7: Ensure EAN exists and fill in blanks
+        if "EAN" not in df.columns:
+            df["EAN"] = "N/A"
+        df["EAN"] = df["EAN"].astype(str)
+
+        df["EAN"] = df.apply(
+            lambda row: generate_fake_ean(row["prodNo"], row["rrp"]) if row["EAN"] in ["", "N/A", "nan"] else row["EAN"], axis=1)
+
+
+        return df
+    except Exception as e:
+        print(f"Error cleaning catalog dataframe: {str(e)}")
+        return {"error": str(e)}
+
 
 @router.post("/parse-csv-from-supabase")
 async def parse_csv_from_supabase(req: FileRequest):
@@ -80,26 +193,14 @@ async def parse_csv_from_supabase(req: FileRequest):
         else:
             return {"error": "Unsupported file type"}
         
-        df.columns = (
-        df.columns.str.strip()
-        .str.lower()
-        .str.replace(" ", "_")
-        .str.replace("-", "_")
-        )
-        REQUIRED_COLUMNS = {
-            "sku": "prodNo",
-            "name": "manufName",  # use as a fallback
-            "description": "prodDesc",
-            "trade_price": "tradePrice",
-            "rrp": "rrp",
-            "stock": "stock",
-            "ean": "EAN"
-            }
+        report = analyze_catalog_dataframe(df)
+        print(report)
 
-        records = df.to_dict(orient="records")
-        print(orjson.dumps(records[:3], option=orjson.OPT_INDENT_2).decode())
+        clean_catalog_dataframe(df)
+       
+        
 
-        return {"data": records}
+        return {"data"}
     
     except Exception as e:
         return {"error": str(e)}
