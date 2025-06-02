@@ -14,7 +14,9 @@ import io
 import requests
 from fastapi.responses import JSONResponse
 import numpy as np
-import orjson
+import uuid
+
+
 
 
 
@@ -48,6 +50,7 @@ class FileRequest(BaseModel):
     file_path: str
 
 def analyze_catalog_dataframe(df: pd.DataFrame) -> dict:
+
     # 1. Count of duplicate rows
     duplicate_rows = df.duplicated().sum()
 
@@ -69,18 +72,31 @@ def analyze_catalog_dataframe(df: pd.DataFrame) -> dict:
     # 5. NaN count per column
     nan_per_column = df.isna().sum().to_dict()
 
+
     return {
-        "duplicate_rows": duplicate_rows,
-        "total_missing_cells": total_missing_cells,
-        "rrp_empty_or_missing": rrp_missing,
-        "rrp_zero": rrp_zero,
-        "nan_per_column": nan_per_column,
+        "duplicate_rows": int(duplicate_rows),
+        "total_missing_cells": int(total_missing_cells),
+        "rrp_empty_or_missing": int(rrp_missing),
+        "rrp_zero": int(rrp_zero),
+        "nan_per_column": {col: int(count) for col, count in nan_per_column.items()},
         "total_rows": len(df),
         "total_columns": len(df.columns)
     }
 
 
-    
+def upload_dataframe_to_supabase(df):
+    records = df.to_dict(orient='records')
+    print(records[:5])  # Print first 5 records for debugging
+    chunk_size = 500
+    for i in range(0, len(records), chunk_size):
+        chunk = records[i:i + chunk_size]
+        response = supabase.table("cleaned_products").insert(chunk).execute()
+        if response.status_code != 201:
+            print(f"Error inserting chunk {i//chunk_size + 1}: {response.data}")
+        else:
+            print(f"Chunk {i//chunk_size + 1} inserted successfully")
+
+
 def generate_fake_ean(prod_no: str, rrp: float) -> str:
     """Simulate EAN using hash of SKU and RRP"""
     base = f"{prod_no}{rrp}"
@@ -118,7 +134,9 @@ def clean_catalog_dataframe(df):
         df = df.drop_duplicates()
         
         # Step 3: Trim whitespace from all string columns
-        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+        for col in df.select_dtypes(include=["object", "string"]).columns:
+            df[col] = df[col].map(lambda x: x.strip() if isinstance(x, str) else x)
+
 
          # Step 5: Ensure correct data types
         string_cols = [ "prodNo", "manufProdNo", "manufName", "prodDesc", "currencyCode", "filecreation", "stockdelvdate", "classification", "eorderable", "manufProdUrl", "prodfamilies", "advClassification", "futexp1", "futexp2",
@@ -144,7 +162,8 @@ def clean_catalog_dataframe(df):
             df.loc[df["rrp"] == 0, "price"] = df["tradePrice"] * 1.20
 
         # Step 8: Generate unique `id`
-        df["id"] = pd.util.hash_pandas_object(df).astype(str)
+        df["id"] = [str(uuid.uuid4()) for _ in range(len(df))]
+
 
         # Step 7: Ensure EAN exists and fill in blanks
         if "EAN" not in df.columns:
@@ -153,7 +172,13 @@ def clean_catalog_dataframe(df):
 
         df["EAN"] = df.apply(
             lambda row: generate_fake_ean(row["prodNo"], row["rrp"]) if row["EAN"] in ["", "N/A", "nan"] else row["EAN"], axis=1)
+        
+        # print(df.columns)
+        df.columns = df.columns.str.lower()
 
+        # print(df.head())
+
+        upload_dataframe_to_supabase(df)
 
         return df
     except Exception as e:
@@ -171,7 +196,6 @@ async def parse_csv_from_supabase(req: FileRequest):
         
         print(f"Fetching file from: {public_url}")
 
-        
 
         # Download the file using requests
         response = requests.get(public_url)
@@ -194,13 +218,11 @@ async def parse_csv_from_supabase(req: FileRequest):
             return {"error": "Unsupported file type"}
         
         report = analyze_catalog_dataframe(df)
-        print(report)
+        # print(report)
 
         clean_catalog_dataframe(df)
-       
-        
 
-        return {"data"}
+        return {"data": report}
     
     except Exception as e:
         return {"error": str(e)}
