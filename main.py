@@ -8,7 +8,7 @@ app = FastAPI(title="FastAPI CSV Processor")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "http://localhost:3001/*", "http://localhost:8000/*"],
+    allow_origins=["*", "http://localhost:3001/*", "http://localhost:8000/*", "https://auto-cat-backend.onrender.com"],
     allow_credentials=True,
     allow_methods=["*"],  
     allow_headers=["*"],  
